@@ -453,7 +453,7 @@ class WaterMeLite:
             self.key_index = r.randrange(0,2) # Which key to use in dictionary
 
         elif self.sensor_timeout >= 40:
-            self.phrase_string = 'Sensor Error: Please Uplug and Plug Back In's
+            self.phrase_string = 'Sensor Error: Please Uplug and Plug Back In'
 
         elif self.sensor_timeout >= 20:
             self.phrase_string = 'Sensor Error: Attempting Reset!'
@@ -492,7 +492,7 @@ class WaterMeLite:
             traceback.print_exc()
 
 if __name__ == '__main__':
-    
+
     print('This version is designed for the pico w.')
     pico_udp_ip_address = '192.168.86.28'
     wm = WaterMeLite(udp_ip_address=pico_udp_ip_address)
