@@ -1,5 +1,4 @@
 import datetime
-import os
 
 # from adafruit_seesaw.seesaw import Seesaw
 import random as r
@@ -7,6 +6,7 @@ import socket
 import sys
 import time
 import traceback
+import threading
 
 import pygame
 import requests
@@ -18,8 +18,9 @@ class RequestIDError(Exception):
     Args:
         Exception (Exception): Returns a String for ID mismatch error.
     """
-    def __init__(self):
+    def __init__(self, return_request_id):
         self.message = "Request/Response ID's do not match."
+        self.return_request_id = return_request_id
 
     def __str__(self):
         return self.message
@@ -31,7 +32,6 @@ class SensorHTTPClient:
     Returns:
         str: Sensor server Data.
     """
-
     BASE_URL = "http://"
     TIMEOUT_VALUE = 0.06
     HTTP_IP = "192.168.4.1"
@@ -116,47 +116,80 @@ class SensorUDPClient:
         self.udp_socket.settimeout(self.TIMEOUT_VALUE)
 
     def get_values(self):
-        """Requests the current moisture and temperature values from the Sensor.
-
-        Raises:
-            RequestIDError: When send/receive request ID's do not match
-
-        Returns:
-            list[str,str]: Moisture and Temperature values in a list.
+        """Requests values from the sensor and ensure matching results.
         """
-        try:
-            # start = time.time()
-            request_id = r.randint(0, 100_000)
-            # print(f"Start Request ID : {request_id}")
+        def _get_request_id():
+            """Generates random request_id
+
+            Returns:
+                int: Random request_id assigned to outgoing requests.
+            """
+            return r.randint(0, 100_000)
+        
+        def _send_request(request_id):
+            """Sends the request to the sensor.
+
+            Args:
+                request_id (int): unique request id for identifying requests/responses
+
+            Returns:
+                request_id (int): the request_id of the outgoing request.
+            """
+            if self.udp_socket.fileno() == -1: # Indicates that the socket is closed
+                self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                self.udp_socket.settimeout(self.TIMEOUT_VALUE)
             self.udp_socket.sendto(
                 f"{request_id}:request_data".encode(),
                 (self.udp_host_ip, self.udp_host_port),
             )
+            return request_id
+        
+        def _receive_data(request_id):
+            """Process the data received from the sensor.
+
+            Args:
+                request_id (int): the expected request_id of the incoming request 
+
+            Raises:
+                RequestIDError: Raised if request/response IDs do not match
+
+            Returns:
+                [moisture, temperature]: List containing the moisture and temperature values from the sensor.
+            """
             data, addr = self.udp_socket.recvfrom(1024)
             decoded_data = data.decode()
             return_request_id, return_data = decoded_data.split(":")
-            # print(f"Request ID: {return_request_id} - Returned in : {time.time()-start}")
+            print(f"Request ID: {return_request_id} - Returned in : {time.time()-start}")
             if int(return_request_id) == request_id:
                 return return_data.split(",")
             else:
-                raise RequestIDError()
+                raise RequestIDError(return_request_id)
 
+        try:
+            start = time.time()
+            request_id = _send_request(request_id=_get_request_id())
+            print(f"Sent Request ID : {request_id}")
+            return _receive_data(request_id=request_id)
         except socket.timeout:
             print(
-                f"Sensor: {self.udp_host_name} @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: Socket Time Out, resetting socket"
+                f"Sensor: {self.udp_host_name} @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: Socket Time Out, Retrying..."
             )
-            self.udp_socket.close()
-            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket.settimeout(self.TIMEOUT_VALUE)
-
+            try:
+                return _receive_data(request_id=request_id)
+            except socket.timeout:
+                print(
+                    f"Sensor: {self.udp_host_name} @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: Socket Timed Out, Resetting Socket"
+                )
+                self.udp_socket.close()
         except RequestIDError as e:
             print(
-                f"Sensor: {self.udp_host_name} @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}, Sent:{request_id} Returned:{return_request_id}. Resetting socket"
+                f"Sensor: {self.udp_host_name} @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}, Sent:{request_id} Returned:{e.return_request_id}. Retrying..."
             )
-            self.udp_socket.close()
-            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket.settimeout(self.TIMEOUT_VALUE)
-
+            try:
+                time.sleep(0.1)
+                return _receive_data(request_id=request_id)
+            except Exception:
+                self.udp_socket.close()
         except Exception as e:
             print(
                 f"Sensor: {self.udp_host_name} @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}"
@@ -168,7 +201,9 @@ class SensorUDPClient:
         """
         self.udp_socket.sendto("reset".encode(), (self.udp_host_ip, self.udp_host_port))
 
-
+# Have it look too see if there is a value in the buffer, if so grab it, request a new one
+# timeout so the program is quick. If no buffer and request is longer than a short time
+# timeout and keep going, and send another request. 
 class WaterMeLite:
     """The main class for the WaterMeLite project."""
 
@@ -183,14 +218,15 @@ class WaterMeLite:
         """
 
         # Create the sensor data.
-        self.sensor_client = SensorUDPClient(udp_ip_address=udp_ip_address, port=5000)
+        self.sensor_client = SensorUDPClient(udp_ip_address=udp_ip_address, port=1900)
         self.sensor_timeout = 0
+        self.data_lock = threading.Lock()
 
         # Initiate pygame display.
         pygame.init()
         pygame.mouse.set_visible(False)
         self.clock = pygame.time.Clock()
-        self.screen = pygame.display.set_mode((720, 480), pygame.NOFRAME)
+        self.screen = pygame.display.set_mode((1280, 720), pygame.NOFRAME)
         self.screen_rect = self.screen.get_rect()
         background = pygame.image.load("images/bg_2.jpg")
         self.background = pygame.transform.scale(background, (self.screen.get_size()))
@@ -201,9 +237,10 @@ class WaterMeLite:
         self.dirty_rects = []
 
         # Global Lists and strings.
+        
         self.moisture_value = 0
-        self.previous_moisture_title_rect = None
         self.temperature_value = 0
+        self.previous_moisture_title_rect = None
         self.previous_temperature_title_rect = None
         self.last_watered_list = []
         self.last_water_string = "Waiting for Water..."
@@ -272,7 +309,7 @@ class WaterMeLite:
             1440p : 2
             4k : 3
         """
-        self.resolution_modifier = 0.62
+        self.resolution_modifier = 1
         # Outer Borders and Margins
         self.right_left_border_mod = 20 * self.resolution_modifier
         self.title_margin_mod = 5 * self.resolution_modifier
@@ -347,22 +384,24 @@ class WaterMeLite:
         while True:
             try:
                 self._check_events()
-                frame_delay_start = time.time()
-                self._update_moisture_and_temp_values()
+                #self._update_moisture_and_temp_values()
                 self._update_screen()
                 _increment_timers()
-                if (time.time() - frame_delay_start) < self.FRAME_DELAY:
-                    time.sleep(
-                        abs(self.FRAME_DELAY - (time.time() - frame_delay_start))
-                    )
-                self.clock.tick(30)
-                # print(self.clock.get_fps())
+                self.clock.tick(10)
+                print(self.clock.get_fps())
                 # print(time.time()-frame_delay_start)
             except Exception as e:
                 print(
                     f"Main Loop @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Exception: {e}"
                 )
                 traceback.print_exc()
+
+    def sensor_thread(self):
+        sens_thread = threading.Thread(
+            target=self._update_moisture_and_temp_values, 
+            daemon=True
+            )
+        sens_thread.start()
 
     def _check_events(self):
         """Check the input events from a user."""
@@ -376,28 +415,31 @@ class WaterMeLite:
     def _update_moisture_and_temp_values(self):
         """Initiates the sensor client to get moisture and temperature values.
         """
-        if self.sensor_timeout != 0 and self.sensor_timeout % 20 == 0:
+        while True:
+            if self.sensor_timeout != 0 and self.sensor_timeout % 100 == 0:
+                try:
+                    self.sensor_client.send_reset()
+                    time.sleep(5)
+                except Exception as e:
+                    print(
+                        f"Sensor Reset Attempt @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}"
+                    )
+                    traceback.print_exc()
             try:
-                self.sensor_client.send_reset()
-                time.sleep(5)
+                moisture, temperature = self.sensor_client.get_values()
+                with self.data_lock:
+                    self.moisture_value = int(moisture)
+                    self.temperature_value = temperature
+                self.sensor_timeout = 0
+            except TypeError:
+                self.sensor_timeout += 1
             except Exception as e:
+                self.sensor_timeout += 1
                 print(
-                    f"Sensor Reset Attempt @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}"
+                    f"Data Values Update @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}"
                 )
                 traceback.print_exc()
-        try:
-            moisture, temperature = self.sensor_client.get_values()
-            self.moisture_value = int(moisture)
-            self.temperature_value = temperature
-            self.sensor_timeout = 0
-        except TypeError:
-            self.sensor_timeout += 1
-        except Exception as e:
-            self.sensor_timeout += 1
-            print(
-                f"Data Values Update @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Error: {e}"
-            )
-            traceback.print_exc()
+            time.sleep(5)
 
     def _draw_moisture_value(self):
         """Draw the moisture value to the screen."""
@@ -412,10 +454,11 @@ class WaterMeLite:
             if self.moisture_value < 80:
                 return self.moisture_value_color_dry
             return self.moisture_value_color_moist
-
-        moisture_img = self.font.render(
-            str(f"{self.moisture_value}%"), True, _get_moisture_value_color()
-        )
+        
+        with self.data_lock:
+            moisture_img = self.font.render(
+                str(f"{self.moisture_value}%"), True, _get_moisture_value_color()
+            )
         moisture_title = self.title_font.render(
             self.sensor_client.udp_host_name, True, self.moisture_title_color
         )
@@ -439,9 +482,10 @@ class WaterMeLite:
 
     def _draw_soil_temp(self):
         """Draw the soil temperature to the screen."""
-        temp_img = self.font.render(
-            str(f"{self.temperature_value}\xb0F"), True, self.temp_value_color
-        )  # \xb0 Unicode for degree symbol
+        with self.data_lock:
+            temp_img = self.font.render(
+                str(f"{self.temperature_value}\xb0F"), True, self.temp_value_color
+            )  # \xb0 Unicode for degree symbol
         temp_title = self.title_font.render("Temperature", True, self.temp_title_color)
         temp_rect = temp_img.get_rect()
         temp_title_rect = temp_title.get_rect()
@@ -536,7 +580,8 @@ class WaterMeLite:
 
     def _draw_last_water(self):
         """Draw the last time watering occured."""
-        self.last_watered_list.append(self.moisture_value)
+        with self.data_lock:
+            self.last_watered_list.append(self.moisture_value)
         if len(self.last_watered_list) > 5:
             self.last_watered_list.pop(0)
         if (
@@ -584,7 +629,6 @@ class WaterMeLite:
 
     def _update_phrase(self):
         """Set the phrase that will be drawn to the screen."""
-
         if self.phrase_timer >= self.phrase_pause + self.phrase_end:
             self.phrase_timer = 0
             self.phrase_string = ""
@@ -599,23 +643,24 @@ class WaterMeLite:
             self.phrase_string = "Sensor Error: Attempting Reset!"
 
         elif self.phrase_timer == self.phrase_pause:
-            if self.moisture_value >= 80:
-                self.random_phrase_key = self.phrase_keys_list[self.key_index][1]
-                random_phrase_id = r.randrange(
-                    0, len(self.phrases[self.random_phrase_key])
-                )  # Which List entry in dictionary
-                self.phrase_string = self.phrases[self.random_phrase_key][
-                    random_phrase_id
-                ]
-            else:
-                random_dry_phrase_id = r.randrange(0, len(self.phrases["Dry Lines"]))
-                self.phrase_string = self.phrases["Dry Lines"][random_dry_phrase_id]
-                self.random_phrase_key = "..."
+            with self.data_lock:
+                if self.moisture_value >= 80:
+                    self.random_phrase_key = self.phrase_keys_list[self.key_index][1]
+                    random_phrase_id = r.randrange(
+                        0, len(self.phrases[self.random_phrase_key])
+                    )  # Which List entry in dictionary
+                    self.phrase_string = self.phrases[self.random_phrase_key][
+                        random_phrase_id
+                    ]
+                else:
+                    random_dry_phrase_id = r.randrange(0, len(self.phrases["Dry Lines"]))
+                    self.phrase_string = self.phrases["Dry Lines"][random_dry_phrase_id]
+                    self.random_phrase_key = "..."
 
     def _update_screen(self):
         """Update the screen with all the dirty rects."""
         try:
-            # start = time.time()
+            #start = time.time()
             if (
                 time.localtime().tm_hour == 3
             ):  # Change this eventually to be for a shorter time than 1 hr
@@ -632,7 +677,7 @@ class WaterMeLite:
             self._draw_phrase()
             pygame.display.update(self.dirty_rects)
             self.dirty_rects = []
-            # print(f"Display Done: {time.time()-start}")
+            #print(f"Display Done: {time.time()-start}")
         except Exception as e:
             print(
                 f"Screen Update @ {time.strftime('%H:%M:%S - %d/%b/%Y')} | Exception: {e}"
@@ -641,6 +686,7 @@ class WaterMeLite:
 
 if __name__ == "__main__":
     print("This version is designed for the pico w.")
-    pico_udp_ip_address = "192.168.86.28"
+    pico_udp_ip_address = "192.168.86.26"
     wm = WaterMeLite(udp_ip_address=pico_udp_ip_address)
+    wm.sensor_thread()
     wm.run_program()
