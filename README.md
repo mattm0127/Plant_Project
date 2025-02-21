@@ -57,17 +57,17 @@ This project consists of two main files:
    * Install the Pygame library using `pip install pygame`.
    * Copy the `water_me_pi_lite_pico.py` file to the display device.
    * Change pico_udp_ip_address in __name__==__main__ to your sensor devices ip
-   IN DEVELOPMENT
-   * Pico W sends ip information once connected to wifi network from AP
+   * **IN DEVELOPMENT**
+      * Pico W sends ip information once connected to wifi network from AP
 
 **3. WiFi Configuration:**
    * In the Pico W settings.toml file, add CIRCUITPY_WIFI_SSID and CIRCUITPY_WIFI_PASSWORD and set them to your wifi and password
-   IN DEVELOPMENT
-   * Power on the Pico W. It will create a WiFi access point named "Pico Moisture Sensor".
-   * Connect to this access point from your computer or mobile device.
-   * Open a web browser and navigate to the IP address shown in the serial output of the Pico W (usually `192.168.4.1`).
-   * Enter your home WiFi SSID and password on the webpage to configure the Pico W.
-   * The Pico W will reset and connect to your home WiFi.
+   * **IN DEVELOPMENT**
+      * Power on the Pico W. It will create a WiFi access point named "Pico Moisture Sensor".
+      * Connect to this access point from your computer or mobile device.
+      * Open a web browser and navigate to the IP address shown in the serial output of the Pico W (usually `192.168.4.1`).
+      * Enter your home WiFi SSID and password on the webpage to configure the Pico W.
+      * The Pico W will reset and connect to your home WiFi.
 ## Usage
 
 1. Run the `water_me_pi_lite_pico.py` file on the display device.
